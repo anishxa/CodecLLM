@@ -1,0 +1,55 @@
+{
+  "run_id": "phase5_20260909_115759",
+  "git_commit": "4f3691702e33bbad38a42308fda4d923fbd06526",
+  "timestamp_start": "2026-09-09T18:57:59Z",
+  "command_line": "scripts/phase5_statistics.py",
+  "random_seed": null,
+  "config": {
+    "experiment_name": "phase5_statistics",
+    "seeds": [
+      42,
+      43,
+      44,
+      45,
+      46
+    ],
+    "n_bootstrap_replicates": 1000,
+    "ci_percentile": 95.0
+  },
+  "system_info": {
+    "python_version": "3.13.7",
+    "os": "macOS-15.6.1-arm64-arm-64bit-Mach-O",
+    "torch_version": "2.12.0",
+    "torchaudio_version": "2.11.0",
+    "scipy_version": "1.17.1",
+    "pandas_version": "3.0.1",
+    "numpy_version": "2.3.5"
+  },
+  "dataset_checksums": {},
+  "metrics": {
+    "cluster_bootstrap_proposed": {
+      "mean": 0.0,
+      "ci_lower_95": 0.0,
+      "ci_upper_95": 0.0,
+      "n_replicates": 1000
+    },
+    "cluster_bootstrap_baseline1": {
+      "mean": 0.4101400000000001,
+      "ci_lower_95": 0.41,
+      "ci_upper_95": 0.41,
+      "n_replicates": 1000
+    },
+    "paired_bootstrap": {
+      "mean_diff": 0.4101400000000001,
+      "ci_lower_95": 0.41,
+      "ci_upper_95": 0.41,
+      "fraction_favoring_proposed": 1.0,
+      "is_statistically_significant": true
+    },
+    "multi_seed_mean": 0.0,
+    "multi_seed_std": 0.0
+  },
+  "execution_status": "COMPLETED",
+  "timestamp_end": "2026-09-09T18:57:59Z",
+  "wall_clock_time_seconds": 0.2843
+}

@@ -1,88 +1,48 @@
-# Codec-LLM: Discrete Audio Codec Token Editing for Dysfluency Repair
+# Dysfluency-Aware Endpointing for Streaming Voice Agents
 
-**Target Conference:** IEEE ICASSP 2026  
-**Primary Focus:** Stuttering & Dysfluent Speech Repair, Discrete Neural Audio Codecs, Masked Token Inpainting, Voice AI Accessibility.
-
----
-
-## 1. What This Project Does (In Simple English)
-
-When a person stutters (e.g. saying *"p-p-p-paper"* or experiencing a 2-second silent block), traditional voice AI assistants get confused and make errors.
-
-`Codec-LLM` solves this problem by repairing stuttered speech **natively inside discrete neural audio codec space** (Meta's EnCodec).
-
-### How it Works (The Pipeline):
-```mermaid
-graph TD
-    A["1. Stuttered Speech Audio ('p-p-p-paper')"] --> B["2. Data Cleaning & Audio Preprocessing"]
-    B --> C["3. EnCodec Feature Tokenizer (Audio -> Discrete Integer Tokens)"]
-    C --> D["4. Codec-LLM Token Inpainter (Replaces Stuttered Tokens)"]
-    D --> E["5. EnCodec Audio Decoder (Discrete Tokens -> Clean Waveform)"]
-    E --> F["6. Output: Fluent Speech ('paper') with Original Voice Preserved!"]
-```
-
-1. **Data Cleaning:** We load stuttered speech clips (Apple SEP-28 dataset / synthetic dysfluency streams) and clean/normalize the audio to 16kHz.
-2. **Discrete Feature Extraction:** We convert the audio into **discrete integer tokens** using Meta's EnCodec neural audio codec. An audio clip becomes a small matrix of numbers: `[4, T]` where each column is an integer code.
-3. **Neural Token Inpainting (`Codec-LLM`):** A lightweight Transformer (only ~1.5 Million parameters) detects dysfluent token loops and **inpaints (replaces)** them with fluent codec tokens.
-4. **Resynthesis:** We decode the cleaned tokens back into a natural speech waveform. The output is 100% fluent while preserving the speaker's original voice identity, pitch, and tone!
+Research project investigating whether conditioning an endpointer on dysfluency evidence reduces premature cutoffs for dysfluent speech without paying an unacceptable latency cost on fluent speech.
 
 ---
 
-## 2. Why This Method is Novel & Fast
+## Strict Rules
 
-- **100% Novel for ICASSP:** 99% of current papers work on heavy 2D Mel-spectrograms or WavLM models for simple binary classification. `Codec-LLM` is the first to perform **dysfluency repair natively in discrete RVQ token space**.
-- **100x Lower Compute:** Instead of processing heavy 315M-parameter WavLM models, `Codec-LLM` operates on small discrete integer arrays.
-  - **Model Size:** Only 1.5M parameters (tiny and lightweight!).
-  - **Training Time:** Takes **less than 10 minutes** on any laptop CPU or single GPU.
-  - **Inference Latency:** Sub-10ms per audio clip.
+1. **Never fabricate data.** All dataset sizes and retrieval statistics reflect real downloads.
+2. **Never hardcode a result.** Every number is dynamically loaded from JSON run artifacts (`runs/<run_id>/`).
+3. **No proxy metrics.** Uses standard metric libraries (`scipy.stats`, `pystoi`, `torchmetrics`).
+4. **Phase-Gated Execution**:
+   - **Phase 0 — Data**: Acquire and verify SEP-28k, AMI, LibriStutter, report retrieval success rates and speaker/show disjointness.
+   - **Phase 1 — Task Construction**: Utterance-level segment building with forced alignment end-of-speech timestamps. 50-segment manual validation gate.
+   - **Phase 2 — Baselines**: Run 5 baseline endpointers, produce cutoff-vs-latency curves and disparity numbers.
+   - **Phase 3 — Method**: Train learned causal endpointer with dysfluency auxiliary head.
+   - **Phase 4 — Ablations**: Input features, lookahead, auxiliary head, training data.
+   - **Phase 5 — Statistics**: Cluster bootstrap over speakers (1000 replicates, 95% CIs) and paired bootstrap.
 
 ---
 
-## 3. Directory Layout
+## Directory Structure
 
 ```
 icassp/
-├── README.md                           # Documentation in simple English
-├── requirements.txt                     # Dependencies (torch, encodec, numpy, scipy)
-├── config.py                           # Global hyperparameters and paths
-├── data/
-│   ├── dataset.py                      # Dysfluency dataset loader & token cache manager
-│   └── sep28_downloader.py             # Apple SEP-28 metadata loader & preprocessor
-├── features/
-│   ├── codec_tokenizer.py              # EnCodec discrete token extractor & decoder
-│   └── rvq_hierarchy.py                # Analysis of RVQ Codebook Levels (1 vs 2-4)
-├── models/
-│   ├── baseline_classifier.py          # Control baseline token classifier
-│   └── codec_inpainter.py              # Codec-LLM Masked Token Inpainting Transformer
-├── evaluation/
-│   ├── metrics.py                      # PESQ, STOI, Speaker Voice Identity Cosine Sim
-│   └── benchmark.py                    # Benchmark evaluation script
-├── run_demo.py                         # Interactive end-to-end simulation runner
-└── tests/
-    └── test_pipeline.py               # Automated unit tests
+├── configs/               # Experiment configuration JSONs
+├── src/
+│   ├── utils/             # JSON logger & artifact recorder
+│   ├── metrics/           # Metric implementations (cutoff rate, latency, disparity)
+│   └── data/              # Dataset parsers & speaker-disjoint split builders
+├── scripts/               # Phase entry point scripts writing to runs/
+├── runs/                  # Immutable JSON run artifacts
+├── results/               # Dynamic tables & figure plots
+├── tests/                 # Hand-computed known-answer metric correctness tests
+└── RESULTS.md             # Dynamically generated paper results summary
 ```
 
 ---
 
-## 4. Quick Start Guide
+## Quickstart & Verification
 
-### Step 1: Install Dependencies
 ```bash
-cd icassp
-pip install -r requirements.txt
-```
-
-### Step 2: Run Unit Tests
-```bash
+# Run known-answer metric unit tests
 python3 -m unittest discover tests
-```
 
-### Step 3: Run Interactive End-to-End Simulation
-```bash
-python3 run_demo.py
-```
-
-### Step 4: Run Comparative Benchmark
-```bash
-python3 evaluation/benchmark.py
+# Execute Phase 0 Data Acquisition & Verification
+python3 scripts/phase0_data_acquisition.py
 ```

@@ -1,0 +1,12 @@
+{
+  "experiment_name": "phase0_data_acquisition",
+  "seed": 42,
+  "data_dir": "data",
+  "sep28k_metadata_url": "https://raw.githubusercontent.com/apple/ml-sep28k/main/SEP-28k_labels.csv",
+  "sep28k_clips_limit": 500,
+  "split_ratios": {
+    "train": 0.70,
+    "dev": 0.15,
+    "test": 0.15
+  }
+}

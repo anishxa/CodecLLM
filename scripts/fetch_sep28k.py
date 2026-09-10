@@ -121,6 +121,14 @@ def process_episode(ep_row, labels_df: pd.DataFrame, data_dir: str = "data", cli
                     sf.write(out_clip_path, clip_audio, 16000)
                     extracted_count += 1
                     
+        # Cleanup large full episode files to save disk space
+        if os.path.exists(mp3_path):
+            try: os.remove(mp3_path)
+            except Exception: pass
+        if os.path.exists(wav_path):
+            try: os.remove(wav_path)
+            except Exception: pass
+
         return {
             "show": show,
             "epid": epid,

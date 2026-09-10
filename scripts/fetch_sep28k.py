@@ -5,17 +5,26 @@ import time
 import hashlib
 import requests
 import subprocess
-import numpy as np
 import pandas as pd
 import soundfile as sf
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Tuple
+from urllib.parse import urlparse
 
 SEP28K_LABELS_URL = "https://raw.githubusercontent.com/apple/ml-stuttering-events-dataset/main/SEP-28k_labels.csv"
 SEP28K_EPISODES_URL = "https://raw.githubusercontent.com/apple/ml-stuttering-events-dataset/main/SEP-28k_episodes.csv"
 
-def download_file(url: str, dest_path: str, retries: int = 3, timeout: int = 30) -> bool:
+def get_file_extension(url: str) -> str:
+    path = urlparse(url).path
+    ext = os.path.splitext(path)[1].lower()
+    if ext in [".mp3", ".m4a", ".mp4", ".aac", ".wav", ".ogg"]:
+        return ext
+    return ".mp3"
+
+def download_file_with_status(url: str, dest_path: str, retries: int = 2, timeout: int = 20) -> Tuple[bool, str]:
     headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+    last_status = "UNKNOWN_ERROR"
+    
     for attempt in range(retries):
         try:
             r = requests.get(url, headers=headers, timeout=timeout, stream=True)
@@ -24,12 +33,21 @@ def download_file(url: str, dest_path: str, retries: int = 3, timeout: int = 30)
                     for chunk in r.iter_content(chunk_size=65536):
                         if chunk:
                             f.write(chunk)
-                return True
+                return True, "200_OK"
             else:
+                last_status = f"HTTP_{r.status_code}"
                 time.sleep(1)
-        except Exception:
+        except requests.exceptions.Timeout:
+            last_status = "TIMEOUT"
             time.sleep(1)
-    return False
+        except requests.exceptions.ConnectionError:
+            last_status = "CONNECTION_ERROR"
+            time.sleep(1)
+        except Exception as e:
+            last_status = f"ERROR_{type(e).__name__}"
+            time.sleep(1)
+            
+    return False, last_status
 
 def compute_sha256(filepath: str) -> str:
     hasher = hashlib.sha256()
@@ -38,7 +56,7 @@ def compute_sha256(filepath: str) -> str:
             hasher.update(chunk)
     return hasher.hexdigest()
 
-def process_episode(ep_row, labels_df: pd.DataFrame, data_dir: str = "data", clips_dir: str = "clips") -> Dict[str, any]:
+def process_episode_quarantine(ep_row, labels_df: pd.DataFrame, data_dir: str = "data", clips_dir: str = "clips") -> Dict[str, any]:
     show = str(ep_row[3]).strip()
     epid = int(ep_row[4])
     url = str(ep_row[2]).strip()
@@ -46,10 +64,11 @@ def process_episode(ep_row, labels_df: pd.DataFrame, data_dir: str = "data", cli
     
     cache_dir = os.path.join(data_dir, "episode_cache")
     os.makedirs(cache_dir, exist_ok=True)
-    mp3_path = os.path.join(cache_dir, f"{ep_key}.mp3")
+    
+    ext = get_file_extension(url)
+    audio_source_path = os.path.join(cache_dir, f"{ep_key}{ext}")
     wav_path = os.path.join(cache_dir, f"{ep_key}_16k.wav")
     
-    # Filter labels for this episode
     ep_labels = labels_df[(labels_df["Show"] == show) & (labels_df["EpId"] == epid)]
     if len(ep_labels) == 0:
         return {
@@ -59,32 +78,38 @@ def process_episode(ep_row, labels_df: pd.DataFrame, data_dir: str = "data", cli
             "url": url,
             "status": "NO_LABELS_FOUND",
             "extracted_clips": 0,
+            "dropped_short_clips": 0,
             "sha256": ""
         }
-        
-    # Download MP3
-    success = False
-    if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 1000:
-        success = True
+
+    # Quarantine Check 1: Maximum required sample offset across all annotated clips for this episode
+    max_annotated_sample = ep_labels["Stop"].max()
+
+    # Download source audio file
+    download_success = False
+    http_status = "CACHED"
+    if os.path.exists(audio_source_path) and os.path.getsize(audio_source_path) > 1000:
+        download_success = True
     else:
-        success = download_file(url, mp3_path)
-        
-    if not success:
+        download_success, http_status = download_file_with_status(url, audio_source_path)
+
+    if not download_success:
         return {
             "show": show,
             "epid": epid,
             "ep_key": ep_key,
             "url": url,
-            "status": "DOWNLOAD_FAILED_DEAD_URL",
+            "status": f"FAILED_{http_status}",
             "extracted_clips": 0,
+            "dropped_short_clips": 0,
             "sha256": ""
         }
-        
-    sha256_hash = compute_sha256(mp3_path)
-    
+
+    sha256_hash = compute_sha256(audio_source_path)
+
     # Convert to 16kHz mono WAV using ffmpeg
     if not os.path.exists(wav_path) or os.path.getsize(wav_path) < 1000:
-        cmd = ["ffmpeg", "-y", "-i", mp3_path, "-ar", "16000", "-ac", "1", wav_path]
+        cmd = ["ffmpeg", "-y", "-i", audio_source_path, "-ar", "16000", "-ac", "1", wav_path]
         res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if res.returncode != 0 or not os.path.exists(wav_path):
             return {
@@ -94,36 +119,53 @@ def process_episode(ep_row, labels_df: pd.DataFrame, data_dir: str = "data", cli
                 "url": url,
                 "status": "FFMPEG_CONVERSION_FAILED",
                 "extracted_clips": 0,
+                "dropped_short_clips": 0,
                 "sha256": sha256_hash
             }
 
-    # Slice 3-second clips
-    extracted_count = 0
+    # Quarantine Check 2: Verify total episode duration against maximum annotated sample offset
     try:
-        audio_data, sr = sf.read(wav_path)
-        max_samples = len(audio_data)
+        info = sf.info(wav_path)
+        total_samples = info.frames
         
+        if total_samples < max_annotated_sample:
+            # Episode audio is shorter than annotated offset -> QUARANTINE TOO_SHORT!
+            return {
+                "show": show,
+                "epid": epid,
+                "ep_key": ep_key,
+                "url": url,
+                "status": f"QUARANTINED_TOO_SHORT (samples {total_samples} < {max_annotated_sample})",
+                "extracted_clips": 0,
+                "dropped_short_clips": len(ep_labels),
+                "sha256": sha256_hash
+            }
+            
+        audio_data, sr = sf.read(wav_path)
         ep_clips_dir = os.path.join(clips_dir, show, str(epid))
         os.makedirs(ep_clips_dir, exist_ok=True)
+        
+        extracted_count = 0
+        dropped_short_count = 0
         
         for _, clip_row in ep_labels.iterrows():
             clip_id = int(clip_row["ClipId"])
             start_sample = int(clip_row["Start"])
             stop_sample = int(clip_row["Stop"])
             
-            if start_sample < max_samples:
-                end_sample = min(stop_sample, max_samples)
-                clip_audio = audio_data[start_sample:end_sample]
+            clip_audio = audio_data[start_sample:stop_sample]
+            
+            # Exact 3.00s check (48,000 samples at 16kHz)
+            if len(clip_audio) == 48000:
+                out_clip_path = os.path.join(ep_clips_dir, f"{clip_id}.wav")
+                sf.write(out_clip_path, clip_audio, 16000)
+                extracted_count += 1
+            else:
+                dropped_short_count += 1
                 
-                # Check valid duration
-                if len(clip_audio) >= 8000: # at least 0.5s
-                    out_clip_path = os.path.join(ep_clips_dir, f"{clip_id}.wav")
-                    sf.write(out_clip_path, clip_audio, 16000)
-                    extracted_count += 1
-                    
-        # Cleanup large full episode files to save disk space
-        if os.path.exists(mp3_path):
-            try: os.remove(mp3_path)
+        # Auto-cleanup temporary full episode files to save disk space
+        if os.path.exists(audio_source_path):
+            try: os.remove(audio_source_path)
             except Exception: pass
         if os.path.exists(wav_path):
             try: os.remove(wav_path)
@@ -136,6 +178,7 @@ def process_episode(ep_row, labels_df: pd.DataFrame, data_dir: str = "data", cli
             "url": url,
             "status": "SUCCESS",
             "extracted_clips": extracted_count,
+            "dropped_short_clips": dropped_short_count,
             "sha256": sha256_hash
         }
     except Exception as e:
@@ -145,13 +188,14 @@ def process_episode(ep_row, labels_df: pd.DataFrame, data_dir: str = "data", cli
             "ep_key": ep_key,
             "url": url,
             "status": f"EXTRACTION_FAILED_{str(e)}",
-            "extracted_clips": extracted_count,
+            "extracted_clips": 0,
+            "dropped_short_clips": 0,
             "sha256": sha256_hash
         }
 
-def main():
+def run_fetch_sep28k():
     print("=" * 80)
-    print("      PHASE 0 REAL DATA ACQUISITION: SEP-28K EPISODES & CLIPS RETRIEVAL")
+    print("      PHASE 0 REAL DATA ACQUISITION & RETRY PASS (NO FALLBACKS)")
     print("=" * 80)
     
     data_dir = "data"
@@ -164,20 +208,20 @@ def main():
     labels_path = os.path.join(data_dir, "SEP-28k_labels.csv")
     episodes_path = os.path.join(data_dir, "SEP-28k_episodes.csv")
     
-    # 1. Fetch official labels CSVs directly from Apple repository
+    headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+    
+    # Download directly from official repository (NO FALLBACK BRANCH)
     if not os.path.exists(labels_path):
-        print(f"[1/4] Fetching official labels CSV from {SEP28K_LABELS_URL}...")
-        r = requests.get(SEP28K_LABELS_URL, timeout=30)
+        r = requests.get(SEP28K_LABELS_URL, headers=headers, timeout=30)
         if r.status_code != 200:
-            raise RuntimeError(f"[CRITICAL FAILURE] Failed to download {SEP28K_LABELS_URL} (Status {r.status_code})")
+            raise RuntimeError(f"CRITICAL FAILURE: Failed to download {SEP28K_LABELS_URL} (Status {r.status_code})")
         with open(labels_path, "w", encoding="utf-8") as f:
             f.write(r.text)
 
     if not os.path.exists(episodes_path):
-        print(f"[1/4] Fetching official episodes CSV from {SEP28K_EPISODES_URL}...")
-        r = requests.get(SEP28K_EPISODES_URL, timeout=30)
+        r = requests.get(SEP28K_EPISODES_URL, headers=headers, timeout=30)
         if r.status_code != 200:
-            raise RuntimeError(f"[CRITICAL FAILURE] Failed to download {SEP28K_EPISODES_URL} (Status {r.status_code})")
+            raise RuntimeError(f"CRITICAL FAILURE: Failed to download {SEP28K_EPISODES_URL} (Status {r.status_code})")
         with open(episodes_path, "w", encoding="utf-8") as f:
             f.write(r.text)
             
@@ -186,45 +230,47 @@ def main():
     
     print(f"Loaded {len(labels_df):,} clip labels across {len(episodes_df)} podcast episodes.")
     
-    # 2. Parallel episode audio download & clip extraction
-    print("\n[2/4] Downloading podcast audio episodes & extracting 16kHz mono clips in parallel...")
     episodes_manifest = []
-    
     max_workers = 8
     total_episodes = len(episodes_df)
     completed = 0
     successful_episodes = 0
     total_clips_extracted = 0
+    total_dropped_short = 0
+    
+    status_counts = {}
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(process_episode, row, labels_df, data_dir, clips_dir): row
+            executor.submit(process_episode_quarantine, row, labels_df, data_dir, clips_dir): row
             for _, row in episodes_df.iterrows()
         }
         for future in as_completed(futures):
             res = future.result()
             completed += 1
             episodes_manifest.append(res)
+            
+            st = res["status"]
+            status_counts[st] = status_counts.get(st, 0) + 1
+            
             if res["status"] == "SUCCESS":
                 successful_episodes += 1
                 total_clips_extracted += res["extracted_clips"]
+                total_dropped_short += res["dropped_short_clips"]
                 
-            if completed % 10 == 0 or completed == total_episodes:
-                print(f"  -> Progress: {completed}/{total_episodes} episodes processed ({successful_episodes} successful, {total_clips_extracted:,} clips extracted)...")
+            if completed % 20 == 0 or completed == total_episodes:
+                print(f"  -> Progress: {completed}/{total_episodes} episodes processed ({successful_episodes} successful, {total_clips_extracted:,} 3.0s clips extracted)...")
 
-    # Sort manifest for deterministic output
     episodes_manifest.sort(key=lambda x: (x["show"], x["epid"]))
     
-    # Write manifest/episodes.jsonl
     jsonl_path = os.path.join(manifest_dir, "episodes.jsonl")
     with open(jsonl_path, "w") as f:
         for item in episodes_manifest:
             f.write(json.dumps(item) + "\n")
-    print(f"\n[3/4] Saved episodes manifest to {jsonl_path}")
 
-    # Calculate total size of clips directory
-    total_clips_bytes = 0
+    # Count actual wav clips on disk
     actual_wav_count = 0
+    total_clips_bytes = 0
     for root, dirs, files in os.walk(clips_dir):
         for file in files:
             if file.endswith(".wav"):
@@ -234,25 +280,31 @@ def main():
     retrieval_rate_pct = (successful_episodes / total_episodes) * 100.0
     total_size_mb = total_clips_bytes / (1024 * 1024)
 
-    # 4. Generate manifest/phase0_report.md
+    # Save manifest/phase0_report.md
     report_path = os.path.join(manifest_dir, "phase0_report.md")
     with open(report_path, "w") as f:
         f.write("# Phase 0 Real Data Acquisition Report: SEP-28k\n\n")
         f.write(f"**Date:** {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}  \n")
         f.write(f"**Source Repository:** `https://github.com/apple/ml-stuttering-events-dataset`  \n\n")
         f.write("---  \n\n")
-        f.write("## 1. Episode Retrieval & Clip Statistics\n\n")
+        f.write("## 1. Episode Retrieval & HTTP Breakdown\n\n")
         f.write("| Metric | Value |\n")
         f.write("| :--- | :--- |\n")
         f.write(f"| **Total Podcast Episodes Attempted** | {total_episodes} |\n")
-        f.write(f"| **Episodes Successfully Retrieved** | {successful_episodes} |\n")
-        f.write(f"| **Dead / Failed Episode URLs** | {total_episodes - successful_episodes} |\n")
+        f.write(f"| **Episodes Successfully Retrieved & Verified** | {successful_episodes} |\n")
         f.write(f"| **Episode Retrieval Success Rate** | **{retrieval_rate_pct:.2f}%** |\n")
-        f.write(f"| **Total 3-Second .wav Clips Extracted** | **{actual_wav_count:,}** |\n")
+        f.write(f"| **Total Real 3-Second .wav Clips Extracted** | **{actual_wav_count:,}** |\n")
+        f.write(f"| **Dropped Non-3.0s Clips** | {total_dropped_short} |\n")
         f.write(f"| **Total Audio Disk Footprint (`clips/`)** | **{total_size_mb:.2f} MB** |\n\n")
-        f.write("---  \n\n")
-        f.write("## 2. Official Show Breakdown Table\n\n")
-        f.write("| Show Name | Total Nominal Clips | Extracted Clips | Status |\n")
+        f.write("### HTTP Retrieval Status Breakdown\n\n")
+        f.write("| Status Code / Category | Count |\n")
+        f.write("| :--- | :--- |\n")
+        for st_name, st_cnt in sorted(status_counts.items(), key=lambda x: x[1], reverse=True):
+            f.write(f"| `{st_name}` | {st_cnt} |\n")
+
+        f.write("\n---  \n\n")
+        f.write("## 2. Surviving Shows Retrieval Table\n\n")
+        f.write("| Show Name | Nominal Labels | Extracted Clips on Disk (`clips/`) | Retrieval Status |\n")
         f.write("| :--- | :--- | :--- | :--- |\n")
         
         shows = labels_df["Show"].unique()
@@ -265,17 +317,7 @@ def main():
                     extracted_show_count += len([f for f in files if f.endswith(".wav")])
             f.write(f"| **{show}** | {nom_count:,} | {extracted_show_count:,} | {'Active' if extracted_show_count > 0 else 'Dead URLs'} |\n")
 
-        f.write("\n---  \n\n")
-        f.write("## 3. Split Discipline & Speaker Identity Verification\n\n")
-        f.write("- **Clustering Unit**: Podcast `Show` (Leave-One-Show-Out across the 8 official shows).\n")
-        f.write("- **Speaker Identity**: Episode ID (`Show_EpId`). Every episode represents a distinct speaker session.\n")
-        f.write("- **Disjointness Assertion**: Proved 0 overlap across Train / Dev / Test sets.\n\n")
-        f.write("> [!IMPORTANT]\n")
-        f.write("> **Human Inspection Required**: Phase 0 deliverable consists of real `.wav` audio files inside `clips/`. Play a clip to verify audio quality before proceeding to Phase 1.\n")
-
-    print(f"[4/4] Saved Phase 0 report to {report_path}\n")
-    print(f"Summary: Retrieved {successful_episodes}/{total_episodes} episodes ({retrieval_rate_pct:.2f}%). Extracted {actual_wav_count:,} real `.wav` clips ({total_size_mb:.2f} MB).")
-    print("STOP HERE. Phase 0 acquisition complete.")
+    print(f"\n[Phase 0 Fetcher Complete] Saved report to {report_path}")
 
 if __name__ == "__main__":
-    main()
+    run_fetch_sep28k()

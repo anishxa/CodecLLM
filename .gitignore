@@ -1,8 +1,15 @@
+clips/
+data/episode_cache/
+cache/
+cache_test/
+*.mp3
+*.m4a
+*.mp4
+*.wav
 __pycache__/
 *.pyc
 *.pyo
 .DS_Store
-cache/
 *.log
 .vscode/
 .idea/

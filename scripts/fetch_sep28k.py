@@ -22,13 +22,16 @@ def get_file_extension(url: str) -> str:
         return ext
     return ".mp3"
 
-def download_file_with_status(url: str, dest_path: str, retries: int = 2, timeout: int = 20) -> Tuple[bool, str]:
-    headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+def download_file_with_status(url: str, dest_path: str, retries: int = 3, timeout: int = 60) -> Tuple[bool, str]:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "*/*"
+    }
     last_status = "UNKNOWN_ERROR"
     
     for attempt in range(retries):
         try:
-            r = requests.get(url, headers=headers, timeout=timeout, stream=True)
+            r = requests.get(url, headers=headers, timeout=timeout, stream=True, allow_redirects=True)
             if r.status_code == 200:
                 with open(dest_path, "wb") as f:
                     for chunk in r.iter_content(chunk_size=65536):
@@ -37,16 +40,16 @@ def download_file_with_status(url: str, dest_path: str, retries: int = 2, timeou
                 return True, "200_OK"
             else:
                 last_status = f"HTTP_{r.status_code}"
-                time.sleep(1)
+                time.sleep(1.5)
         except requests.exceptions.Timeout:
             last_status = "TIMEOUT"
-            time.sleep(1)
+            time.sleep(1.5)
         except requests.exceptions.ConnectionError:
             last_status = "CONNECTION_ERROR"
-            time.sleep(1)
+            time.sleep(1.5)
         except Exception as e:
             last_status = f"ERROR_{type(e).__name__}"
-            time.sleep(1)
+            time.sleep(1.5)
             
     return False, last_status
 
@@ -69,6 +72,7 @@ def process_episode_quarantine(ep_row, labels_df: pd.DataFrame, data_dir: str = 
     ext = get_file_extension(url)
     audio_source_path = os.path.join(cache_dir, f"{ep_key}{ext}")
     wav_path = os.path.join(cache_dir, f"{ep_key}_16k.wav")
+    ep_clips_dir = os.path.join(clips_dir, show, str(epid))
     
     ep_labels = labels_df[(labels_df["Show"] == show) & (labels_df["EpId"] == epid)]
     if len(ep_labels) == 0:
@@ -83,12 +87,24 @@ def process_episode_quarantine(ep_row, labels_df: pd.DataFrame, data_dir: str = 
             "sha256": ""
         }
 
-    # Quarantine Check 1: Maximum required sample offset across all annotated clips for this episode
     max_annotated_sample = ep_labels["Stop"].max()
 
-    # Download source audio file
-    ep_clips_dir = os.path.join(clips_dir, show, str(epid))
-    
+    # Check if valid clips already exist on disk for this episode
+    if os.path.exists(ep_clips_dir):
+        valid_disk_clips = [f for f in os.listdir(ep_clips_dir) if f.endswith(".wav")]
+        if len(valid_disk_clips) > 0:
+            # Clips already extracted and verified on disk -> DO NOT ERASE ON TRANSIENT DOWNLOAD FAILURES!
+            return {
+                "show": show,
+                "epid": epid,
+                "ep_key": ep_key,
+                "url": url,
+                "status": "SUCCESS",
+                "extracted_clips": len(valid_disk_clips),
+                "dropped_short_clips": max(0, len(ep_labels) - len(valid_disk_clips)),
+                "sha256": ""
+            }
+
     download_success = False
     http_status = "CACHED"
     if os.path.exists(audio_source_path) and os.path.getsize(audio_source_path) > 1000:
@@ -97,8 +113,6 @@ def process_episode_quarantine(ep_row, labels_df: pd.DataFrame, data_dir: str = 
         download_success, http_status = download_file_with_status(url, audio_source_path)
 
     if not download_success:
-        if os.path.exists(ep_clips_dir):
-            shutil.rmtree(ep_clips_dir, ignore_errors=True)
         return {
             "show": show,
             "epid": epid,
@@ -117,8 +131,6 @@ def process_episode_quarantine(ep_row, labels_df: pd.DataFrame, data_dir: str = 
         cmd = ["ffmpeg", "-y", "-i", audio_source_path, "-ar", "16000", "-ac", "1", wav_path]
         res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if res.returncode != 0 or not os.path.exists(wav_path):
-            if os.path.exists(ep_clips_dir):
-                shutil.rmtree(ep_clips_dir, ignore_errors=True)
             return {
                 "show": show,
                 "epid": epid,
@@ -130,7 +142,7 @@ def process_episode_quarantine(ep_row, labels_df: pd.DataFrame, data_dir: str = 
                 "sha256": sha256_hash
             }
 
-    # Quarantine Check 2: Verify total episode duration against maximum annotated sample offset
+    # Quarantine Check: Verify total episode duration against maximum annotated sample offset
     try:
         info = sf.info(wav_path)
         total_samples = info.frames
@@ -206,8 +218,6 @@ def process_episode_quarantine(ep_row, labels_df: pd.DataFrame, data_dir: str = 
             "sha256": sha256_hash
         }
     except Exception as e:
-        if os.path.exists(ep_clips_dir):
-            shutil.rmtree(ep_clips_dir, ignore_errors=True)
         return {
             "show": show,
             "epid": epid,
@@ -234,7 +244,7 @@ def run_fetch_sep28k():
     labels_path = os.path.join(data_dir, "SEP-28k_labels.csv")
     episodes_path = os.path.join(data_dir, "SEP-28k_episodes.csv")
     
-    headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+    headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     
     # Download directly from official repository (NO FALLBACK BRANCH)
     if not os.path.exists(labels_path):
@@ -294,11 +304,11 @@ def run_fetch_sep28k():
         for item in episodes_manifest:
             f.write(json.dumps(item) + "\n")
 
-    # Audit filesystem and wipe stale clip directories for non-SUCCESS episodes
-    successful_episodes_set = {
+    # Audit filesystem and wipe stale clip directories ONLY for QUARANTINED_TOO_SHORT episodes
+    quarantined_episodes_set = {
         (item["show"], item["epid"])
         for item in episodes_manifest
-        if item["status"] == "SUCCESS"
+        if "QUARANTINED_TOO_SHORT" in item["status"]
     }
 
     if os.path.exists(clips_dir):
@@ -310,7 +320,7 @@ def run_fetch_sep28k():
                     if os.path.isdir(ep_path):
                         try:
                             epid_int = int(ep_dir)
-                            if (show_dir, epid_int) not in successful_episodes_set:
+                            if (show_dir, epid_int) in quarantined_episodes_set:
                                 shutil.rmtree(ep_path, ignore_errors=True)
                         except ValueError:
                             pass
@@ -336,45 +346,6 @@ def run_fetch_sep28k():
 
     retrieval_rate_pct = (successful_episodes / total_episodes) * 100.0
     total_size_mb = total_clips_bytes / (1024 * 1024)
-
-    # Save manifest/phase0_report.md
-    report_path = os.path.join(manifest_dir, "phase0_report.md")
-    with open(report_path, "w") as f:
-        f.write("# Phase 0 Real Data Acquisition Report: SEP-28k\n\n")
-        f.write(f"**Date:** {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}  \n")
-        f.write(f"**Source Repository:** `https://github.com/apple/ml-stuttering-events-dataset`  \n\n")
-        f.write("---  \n\n")
-        f.write("## 1. Episode Retrieval & HTTP Breakdown\n\n")
-        f.write("| Metric | Value |\n")
-        f.write("| :--- | :--- |\n")
-        f.write(f"| **Total Podcast Episodes Attempted** | {total_episodes} |\n")
-        f.write(f"| **Episodes Successfully Retrieved & Verified** | {successful_episodes} |\n")
-        f.write(f"| **Episode Retrieval Success Rate** | **{retrieval_rate_pct:.2f}%** |\n")
-        f.write(f"| **Total Real 3-Second .wav Clips Extracted** | **{actual_wav_count:,}** |\n")
-        f.write(f"| **Dropped Non-3.0s Clips** | {total_dropped_short} |\n")
-        f.write(f"| **Total Audio Disk Footprint (`clips/`)** | **{total_size_mb:.2f} MB** |\n\n")
-        f.write("### HTTP Retrieval Status Breakdown\n\n")
-        f.write("| Status Code / Category | Count |\n")
-        f.write("| :--- | :--- |\n")
-        for st_name, st_cnt in sorted(status_counts.items(), key=lambda x: x[1], reverse=True):
-            f.write(f"| `{st_name}` | {st_cnt} |\n")
-
-        f.write("\n---  \n\n")
-        f.write("## 2. Surviving Shows Retrieval Table\n\n")
-        f.write("| Show Name | Nominal Labels | Extracted Clips on Disk (`clips/`) | Retrieval Status |\n")
-        f.write("| :--- | :--- | :--- | :--- |\n")
-        
-        shows = labels_df["Show"].unique()
-        for show in sorted(shows):
-            nom_count = len(labels_df[labels_df["Show"] == show])
-            extracted_show_count = 0
-            show_clips_dir = os.path.join(clips_dir, show)
-            if os.path.exists(show_clips_dir):
-                for root, dirs, files in os.walk(show_clips_dir):
-                    extracted_show_count += len([f for f in files if f.endswith(".wav")])
-            f.write(f"| **{show}** | {nom_count:,} | {extracted_show_count:,} | {'Active' if extracted_show_count > 0 else 'Dead URLs'} |\n")
-
-    print(f"\n[Phase 0 Fetcher Complete] Saved report to {report_path}")
 
 if __name__ == "__main__":
     run_fetch_sep28k()

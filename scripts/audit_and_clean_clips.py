@@ -25,6 +25,7 @@ def audit_and_clean():
     
     recovered_episodes = 0
     
+    # 1. First Pass: Inspect cache for QUARANTINED_TOO_SHORT episodes with shortfall < 48,000 samples
     for ep in episodes:
         show = ep["show"]
         epid = int(ep["epid"])
@@ -33,7 +34,6 @@ def audit_and_clean():
         
         status = ep["status"]
         
-        # Check if this episode was quarantined due to TOO_SHORT
         if "QUARANTINED_TOO_SHORT" in status:
             ep_labels = labels_df[(labels_df["Show"] == show) & (labels_df["EpId"] == epid)]
             max_annotated_sample = ep_labels["Stop"].max() if len(ep_labels) > 0 else 0
@@ -46,7 +46,7 @@ def audit_and_clean():
                     total_samples = info.frames
                     shortfall = max_annotated_sample - total_samples
                     
-                    if shortfall < 48000: # shortfall < 3.0s trailing frame difference
+                    if shortfall < 48000: # shortfall < 3.0s trailing frame difference -> RECOVER!
                         audio_data, sr = sf.read(wav_path)
                         os.makedirs(ep_clips_dir, exist_ok=True)
                         
@@ -74,57 +74,56 @@ def audit_and_clean():
                             ep["extracted_clips"] = extracted_count
                             ep["dropped_short_clips"] = dropped_short_count
                             recovered_episodes += 1
+                            print(f"  [MARGINAL RECOVERY] {ep_key}: shortfall {shortfall} samples ({shortfall/16000:.3f}s) -> Extracted {extracted_count} clips.")
                         else:
                             if os.path.exists(ep_clips_dir):
                                 shutil.rmtree(ep_clips_dir, ignore_errors=True)
                     else:
+                        # Genuine mismatch (shortfall >= 48,000 samples) -> wipe clips directory
                         if os.path.exists(ep_clips_dir):
                             shutil.rmtree(ep_clips_dir, ignore_errors=True)
                 except Exception:
-                    if os.path.exists(ep_clips_dir):
-                        shutil.rmtree(ep_clips_dir, ignore_errors=True)
-            else:
-                if os.path.exists(ep_clips_dir):
-                    shutil.rmtree(ep_clips_dir, ignore_errors=True)
-                    
-        elif status != "SUCCESS":
-            if os.path.exists(ep_clips_dir):
-                shutil.rmtree(ep_clips_dir, ignore_errors=True)
+                    pass
 
-    # 100% Strict Audio Format & Duration Audit: Remove any non-48000 sample .wav files from disk
+    # 2. Strict Audio Format Check: Remove invalid/corrupt audio files from disk
     dropped_invalid_wavs = 0
-    for root, dirs, files in os.walk(clips_dir):
-        for file in files:
-            if file.endswith(".wav"):
-                wav_p = os.path.join(root, file)
-                try:
-                    info = sf.info(wav_p)
-                    if info.frames != 48000 or info.samplerate != 16000:
+    if os.path.exists(clips_dir):
+        for root, dirs, files in os.walk(clips_dir):
+            for file in files:
+                if file.endswith(".wav"):
+                    wav_p = os.path.join(root, file)
+                    try:
+                        info = sf.info(wav_p)
+                        if info.frames != 48000 or info.samplerate != 16000:
+                            os.remove(wav_p)
+                            dropped_invalid_wavs += 1
+                    except Exception:
                         os.remove(wav_p)
                         dropped_invalid_wavs += 1
-                except Exception:
-                    os.remove(wav_p)
-                    dropped_invalid_wavs += 1
 
     if dropped_invalid_wavs > 0:
         print(f"  [STRICT AUDIT] Removed {dropped_invalid_wavs} invalid/non-3.0s .wav files from disk.")
 
-    # Sync episode manifest extracted_clips with physical 48,000-sample files on disk
+    # 3. Sync episode manifest extracted_clips with physical 48,000-sample files on disk
     for ep in episodes:
         show = ep["show"]
         epid = int(ep["epid"])
         ep_clips_dir = os.path.join(clips_dir, show, str(epid))
         
-        if ep["status"] == "SUCCESS":
-            if os.path.exists(ep_clips_dir):
-                wav_files = [f for f in os.listdir(ep_clips_dir) if f.endswith(".wav")]
-                if len(wav_files) > 0:
-                    ep["extracted_clips"] = len(wav_files)
+        if os.path.exists(ep_clips_dir):
+            wav_files = [f for f in os.listdir(ep_clips_dir) if f.endswith(".wav")]
+            if len(wav_files) > 0:
+                ep["status"] = "SUCCESS"
+                ep["extracted_clips"] = len(wav_files)
+            else:
+                if "QUARANTINED_TOO_SHORT" in ep["status"]:
+                    ep["extracted_clips"] = 0
                 else:
                     ep["status"] = "FAILED_NO_CLIPS_ON_DISK"
                     ep["extracted_clips"] = 0
-                    shutil.rmtree(ep_clips_dir, ignore_errors=True)
-            else:
+                shutil.rmtree(ep_clips_dir, ignore_errors=True)
+        else:
+            if ep["status"] == "SUCCESS":
                 ep["status"] = "FAILED_NO_CLIPS_ON_DISK"
                 ep["extracted_clips"] = 0
 
@@ -133,11 +132,11 @@ def audit_and_clean():
         for ep in episodes:
             f.write(json.dumps(ep) + "\n")
             
-    # Filesystem audit: wipe any directory in clips/ that is not marked SUCCESS in episodes manifest
-    successful_episodes_set = {
+    # Filesystem audit: wipe any directory under clips/ ONLY if marked QUARANTINED_TOO_SHORT
+    quarantined_episodes_set = {
         (ep["show"], ep["epid"])
         for ep in episodes
-        if ep["status"] == "SUCCESS"
+        if "QUARANTINED_TOO_SHORT" in ep["status"]
     }
     
     if os.path.exists(clips_dir):
@@ -149,7 +148,7 @@ def audit_and_clean():
                     if os.path.isdir(ep_path):
                         try:
                             epid_int = int(ep_dir)
-                            if (show_dir, epid_int) not in successful_episodes_set:
+                            if (show_dir, epid_int) in quarantined_episodes_set:
                                 shutil.rmtree(ep_path, ignore_errors=True)
                         except ValueError:
                             pass

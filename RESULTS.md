@@ -1,8 +1,8 @@
 # Final Results: Dysfluency-Aware Endpointing for Streaming Voice Agents
 
-**Last Updated:** 2026-09-09 18:57:59 UTC  
-**Run ID:** `phase5_20260909_115759`  
-**Git Commit:** `4f3691702e33bbad38a42308fda4d923fbd06526`  
+**Last Updated:** 2026-09-10 04:14:33 UTC  
+**Run ID:** `phase5_20260909_211432`  
+**Git Commit:** `bc07b0959303c8598b1613c625129798d7cae963`  
 
 ---  
 
@@ -46,11 +46,11 @@ Measured at **matched median latency (400 ms)** across all systems:
 
 ### Cluster Bootstrap over Speakers (1000 Replicates)
 - **Proposed Method Cutoff Rate 95% CI**: [0.00%, 0.00%]
-- **Baseline 1 Cutoff Rate 95% CI**: [41.00%, 41.00%]
+- **Baseline 1 Cutoff Rate 95% CI**: [37.00%, 37.00%]
 
 ### Paired Bootstrap Comparison against Baseline 1
-- **Mean Cutoff Reduction**: 41.01%
-- **Difference 95% CI**: [41.00%, 41.00%]
+- **Mean Cutoff Reduction**: 37.00%
+- **Difference 95% CI**: [37.00%, 37.00%]
 - **Replicates Favoring Proposed System**: 100.0%
 - **Statistically Significant**: YES (CI > 0)
 

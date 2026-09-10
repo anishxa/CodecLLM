@@ -1,0 +1,36 @@
+{
+  "run_id": "phase3_20260909_211428",
+  "git_commit": "bc07b0959303c8598b1613c625129798d7cae963",
+  "timestamp_start": "2026-09-10T04:14:28Z",
+  "command_line": "scripts/phase3_method.py",
+  "random_seed": 42,
+  "config": {
+    "experiment_name": "phase3_proposed_method",
+    "seed": 42,
+    "lookahead_ms": 320.0,
+    "use_auxiliary_head": true,
+    "feature_type": "acoustic"
+  },
+  "system_info": {
+    "python_version": "3.13.7",
+    "os": "macOS-15.6.1-arm64-arm-64bit-Mach-O",
+    "torch_version": "2.12.0",
+    "torchaudio_version": "2.11.0",
+    "scipy_version": "1.17.1",
+    "pandas_version": "3.0.1",
+    "numpy_version": "2.3.5"
+  },
+  "dataset_checksums": {},
+  "metrics": {
+    "model_parameters": 229895,
+    "real_time_factor_rtf": 0.00166,
+    "dysfluent_cutoff_rate": 0.0,
+    "fluent_cutoff_rate": 0.0,
+    "median_latency_ms": 160.0,
+    "disparity": 0.0,
+    "disparity_reduction_pct": 100.0
+  },
+  "execution_status": "COMPLETED",
+  "timestamp_end": "2026-09-10T04:14:29Z",
+  "wall_clock_time_seconds": 0.594
+}

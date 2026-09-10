@@ -2,68 +2,67 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Tuple, List
 
-def create_speaker_show_disjoint_splits(
+OFFICIAL_SEP28K_SHOWS = [
+    "WomenWhoStutter",
+    "StutterTalk",
+    "StutteringIsCool",
+    "HeStutters",
+    "MyStutteringLife",
+    "StrongVoices",
+    "IStutterSoWhat",
+    "HVSA"
+]
+
+def create_leave_one_show_out_splits(
     df: pd.DataFrame,
+    test_show: str = "WomenWhoStutter",
+    dev_show: str = "StutterTalk",
     show_col: str = "Show",
-    speaker_col: str = "clip_id",
-    train_ratio: float = 0.70,
-    dev_ratio: float = 0.15,
-    test_ratio: float = 0.15,
-    seed: int = 42
+    speaker_col: str = "speaker_id"
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, any]]:
     """
-    Enforces split discipline: Splits are disjoint by podcast show and speaker.
-    Includes automated verification assertion proving 0 overlap across Train/Dev/Test.
+    Leave-One-Show-Out split discipline for SEP-28k:
+    - Clusters by Show (8 official podcast shows).
+    - Speaker identity is Episode (Show_EpId).
+    - Asserts 0 overlap across Train / Dev / Test sets.
     """
-    np.random.seed(seed)
+    assert show_col in df.columns, f"Show column {show_col} missing in dataframe"
+    assert test_show in df[show_col].values, f"Test show {test_show} not found in dataframe"
+    assert dev_show in df[show_col].values, f"Dev show {dev_show} not found in dataframe"
     
-    unique_shows = list(df[show_col].unique())
-    np.random.shuffle(unique_shows)
+    test_df = df[df[show_col] == test_show].copy()
+    dev_df = df[df[show_col] == dev_show].copy()
+    train_df = df[(df[show_col] != test_show) & (df[show_col] != dev_show)].copy()
     
-    n_shows = len(unique_shows)
-    n_train = max(1, int(n_shows * train_ratio))
-    n_dev = max(1, int(n_shows * dev_ratio))
+    # Verify 0 overlap
+    train_shows = set(train_df[show_col].unique())
+    dev_shows = set(dev_df[show_col].unique())
+    test_shows = set(test_df[show_col].unique())
     
-    train_shows = set(unique_shows[:n_train])
-    dev_shows = set(unique_shows[n_train:n_train + n_dev])
-    test_shows = set(unique_shows[n_train + n_dev:])
+    train_spks = set(train_df[speaker_col].unique())
+    dev_spks = set(dev_df[speaker_col].unique())
+    test_spks = set(test_df[speaker_col].unique())
     
-    # Handle small datasets where test_shows might be empty
-    if len(test_shows) == 0 and len(dev_shows) > 1:
-        dev_list = list(dev_shows)
-        test_shows = {dev_list.pop()}
-        dev_shows = set(dev_list)
-
-    train_df = df[df[show_col].isin(train_shows)].copy()
-    dev_df = df[df[show_col].isin(dev_shows)].copy()
-    test_df = df[df[show_col].isin(test_shows)].copy()
+    overlap_shows = train_shows.intersection(test_shows).union(train_shows.intersection(dev_shows)).union(dev_shows.intersection(test_shows))
+    overlap_spks = train_spks.intersection(test_spks).union(train_spks.intersection(dev_spks)).union(dev_spks.intersection(test_spks))
     
-    # Verify disjointness
-    train_shows_set = set(train_df[show_col].unique())
-    dev_shows_set = set(dev_df[show_col].unique())
-    test_shows_set = set(test_df[show_col].unique())
-    
-    overlap_train_dev = train_shows_set.intersection(dev_shows_set)
-    overlap_train_test = train_shows_set.intersection(test_shows_set)
-    overlap_dev_test = dev_shows_set.intersection(test_shows_set)
-    
-    assert len(overlap_train_dev) == 0, f"Show overlap detected between Train and Dev: {overlap_train_dev}"
-    assert len(overlap_train_test) == 0, f"Show overlap detected between Train and Test: {overlap_train_test}"
-    assert len(overlap_dev_test) == 0, f"Show overlap detected between Dev and Test: {overlap_dev_test}"
+    assert len(overlap_shows) == 0, f"Show overlap detected: {overlap_shows}"
+    assert len(overlap_spks) == 0, f"Speaker overlap detected: {overlap_spks}"
     
     split_info = {
+        "split_method": "leave_one_show_out",
+        "test_show": test_show,
+        "dev_show": dev_show,
         "num_train_clips": len(train_df),
         "num_dev_clips": len(dev_df),
         "num_test_clips": len(test_df),
-        "num_train_shows": len(train_shows_set),
-        "num_dev_shows": len(dev_shows_set),
-        "num_test_shows": len(test_shows_set),
-        "disjoint_verification_passed": True,
-        "show_overlaps": {
-            "train_dev": len(overlap_train_dev),
-            "train_test": len(overlap_train_test),
-            "dev_test": len(overlap_dev_test)
-        }
+        "num_train_shows": len(train_shows),
+        "num_dev_shows": len(dev_shows),
+        "num_test_shows": len(test_shows),
+        "num_train_speakers": len(train_spks),
+        "num_dev_speakers": len(dev_spks),
+        "num_test_speakers": len(test_spks),
+        "disjoint_verification_passed": True
     }
     
     return train_df, dev_df, test_df, split_info

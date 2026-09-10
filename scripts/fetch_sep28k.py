@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import time
+import shutil
 import hashlib
 import requests
 import subprocess
@@ -86,6 +87,8 @@ def process_episode_quarantine(ep_row, labels_df: pd.DataFrame, data_dir: str = 
     max_annotated_sample = ep_labels["Stop"].max()
 
     # Download source audio file
+    ep_clips_dir = os.path.join(clips_dir, show, str(epid))
+    
     download_success = False
     http_status = "CACHED"
     if os.path.exists(audio_source_path) and os.path.getsize(audio_source_path) > 1000:
@@ -94,6 +97,8 @@ def process_episode_quarantine(ep_row, labels_df: pd.DataFrame, data_dir: str = 
         download_success, http_status = download_file_with_status(url, audio_source_path)
 
     if not download_success:
+        if os.path.exists(ep_clips_dir):
+            shutil.rmtree(ep_clips_dir, ignore_errors=True)
         return {
             "show": show,
             "epid": epid,
@@ -112,6 +117,8 @@ def process_episode_quarantine(ep_row, labels_df: pd.DataFrame, data_dir: str = 
         cmd = ["ffmpeg", "-y", "-i", audio_source_path, "-ar", "16000", "-ac", "1", wav_path]
         res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if res.returncode != 0 or not os.path.exists(wav_path):
+            if os.path.exists(ep_clips_dir):
+                shutil.rmtree(ep_clips_dir, ignore_errors=True)
             return {
                 "show": show,
                 "epid": epid,
@@ -127,22 +134,24 @@ def process_episode_quarantine(ep_row, labels_df: pd.DataFrame, data_dir: str = 
     try:
         info = sf.info(wav_path)
         total_samples = info.frames
+        shortfall = max_annotated_sample - total_samples
         
-        if total_samples < max_annotated_sample:
-            # Episode audio is shorter than annotated offset -> QUARANTINE TOO_SHORT!
+        # If shortfall >= 48,000 samples (>= 3.0s, genuine mismatch) -> QUARANTINE!
+        if shortfall >= 48000:
+            if os.path.exists(ep_clips_dir):
+                shutil.rmtree(ep_clips_dir, ignore_errors=True)
             return {
                 "show": show,
                 "epid": epid,
                 "ep_key": ep_key,
                 "url": url,
-                "status": f"QUARANTINED_TOO_SHORT (samples {total_samples} < {max_annotated_sample})",
+                "status": f"QUARANTINED_TOO_SHORT (samples {total_samples} < {max_annotated_sample}, shortfall {shortfall})",
                 "extracted_clips": 0,
                 "dropped_short_clips": len(ep_labels),
                 "sha256": sha256_hash
             }
             
         audio_data, sr = sf.read(wav_path)
-        ep_clips_dir = os.path.join(clips_dir, show, str(epid))
         os.makedirs(ep_clips_dir, exist_ok=True)
         
         extracted_count = 0
@@ -153,13 +162,14 @@ def process_episode_quarantine(ep_row, labels_df: pd.DataFrame, data_dir: str = 
             start_sample = int(clip_row["Start"])
             stop_sample = int(clip_row["Stop"])
             
-            clip_audio = audio_data[start_sample:stop_sample]
-            
-            # Exact 3.00s check (48,000 samples at 16kHz)
-            if len(clip_audio) == 48000:
-                out_clip_path = os.path.join(ep_clips_dir, f"{clip_id}.wav")
-                sf.write(out_clip_path, clip_audio, 16000)
-                extracted_count += 1
+            if stop_sample <= total_samples:
+                clip_audio = audio_data[start_sample:stop_sample]
+                if len(clip_audio) == 48000:
+                    out_clip_path = os.path.join(ep_clips_dir, f"{clip_id}.wav")
+                    sf.write(out_clip_path, clip_audio, 16000)
+                    extracted_count += 1
+                else:
+                    dropped_short_count += 1
             else:
                 dropped_short_count += 1
                 
@@ -170,6 +180,20 @@ def process_episode_quarantine(ep_row, labels_df: pd.DataFrame, data_dir: str = 
         if os.path.exists(wav_path):
             try: os.remove(wav_path)
             except Exception: pass
+
+        if extracted_count == 0:
+            if os.path.exists(ep_clips_dir):
+                shutil.rmtree(ep_clips_dir, ignore_errors=True)
+            return {
+                "show": show,
+                "epid": epid,
+                "ep_key": ep_key,
+                "url": url,
+                "status": f"QUARANTINED_TOO_SHORT (shortfall {shortfall})",
+                "extracted_clips": 0,
+                "dropped_short_clips": len(ep_labels),
+                "sha256": sha256_hash
+            }
 
         return {
             "show": show,
@@ -182,6 +206,8 @@ def process_episode_quarantine(ep_row, labels_df: pd.DataFrame, data_dir: str = 
             "sha256": sha256_hash
         }
     except Exception as e:
+        if os.path.exists(ep_clips_dir):
+            shutil.rmtree(ep_clips_dir, ignore_errors=True)
         return {
             "show": show,
             "epid": epid,
@@ -268,6 +294,29 @@ def run_fetch_sep28k():
         for item in episodes_manifest:
             f.write(json.dumps(item) + "\n")
 
+    # Audit filesystem and wipe stale clip directories for non-SUCCESS episodes
+    successful_episodes_set = {
+        (item["show"], item["epid"])
+        for item in episodes_manifest
+        if item["status"] == "SUCCESS"
+    }
+
+    if os.path.exists(clips_dir):
+        for show_dir in os.listdir(clips_dir):
+            show_path = os.path.join(clips_dir, show_dir)
+            if os.path.isdir(show_path):
+                for ep_dir in os.listdir(show_path):
+                    ep_path = os.path.join(show_path, ep_dir)
+                    if os.path.isdir(ep_path):
+                        try:
+                            epid_int = int(ep_dir)
+                            if (show_dir, epid_int) not in successful_episodes_set:
+                                shutil.rmtree(ep_path, ignore_errors=True)
+                        except ValueError:
+                            pass
+                if os.path.exists(show_path) and len(os.listdir(show_path)) == 0:
+                    os.rmdir(show_path)
+
     # Count actual wav clips on disk
     actual_wav_count = 0
     total_clips_bytes = 0
@@ -276,7 +325,15 @@ def run_fetch_sep28k():
             if file.endswith(".wav"):
                 actual_wav_count += 1
                 total_clips_bytes += os.path.getsize(os.path.join(root, file))
-                
+
+    manifest_sum = sum(item["extracted_clips"] for item in episodes_manifest if item["status"] == "SUCCESS")
+    
+    # PERMANENT ASSERTION: Disk clip count MUST EQUAL manifest sum
+    assert actual_wav_count == manifest_sum, (
+        f"CRITICAL DISCREPANCY: Disk clip count ({actual_wav_count}) != Manifest sum ({manifest_sum})"
+    )
+    print(f"  [ASSERTION PASSED] Disk clip count ({actual_wav_count}) matches manifest sum ({manifest_sum}).")
+
     retrieval_rate_pct = (successful_episodes / total_episodes) * 100.0
     total_size_mb = total_clips_bytes / (1024 * 1024)
 

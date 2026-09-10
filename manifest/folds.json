@@ -1,0 +1,118 @@
+{
+  "dataset": "SEP-28k",
+  "num_folds": 5,
+  "surviving_shows": [
+    "HVSA",
+    "HeStutters",
+    "MyStutteringLife",
+    "StutterTalk",
+    "WomenWhoStutter"
+  ],
+  "folds": [
+    {
+      "fold": 0,
+      "test_show": "HVSA",
+      "dev_show": "HeStutters",
+      "train_shows": [
+        "MyStutteringLife",
+        "StutterTalk",
+        "WomenWhoStutter"
+      ],
+      "num_train_clips": 15742,
+      "num_dev_clips": 2501,
+      "num_test_clips": 524,
+      "num_train_shows": 3,
+      "num_dev_shows": 1,
+      "num_test_shows": 1,
+      "num_train_speakers": 219,
+      "num_dev_speakers": 15,
+      "num_test_speakers": 3,
+      "disjoint_verification_passed": true,
+      "notes": ""
+    },
+    {
+      "fold": 1,
+      "test_show": "HeStutters",
+      "dev_show": "MyStutteringLife",
+      "train_shows": [
+        "HVSA",
+        "StutterTalk",
+        "WomenWhoStutter"
+      ],
+      "num_train_clips": 14701,
+      "num_dev_clips": 1565,
+      "num_test_clips": 2501,
+      "num_train_shows": 3,
+      "num_dev_shows": 1,
+      "num_test_shows": 1,
+      "num_train_speakers": 194,
+      "num_dev_speakers": 28,
+      "num_test_speakers": 15,
+      "disjoint_verification_passed": true,
+      "notes": ""
+    },
+    {
+      "fold": 2,
+      "test_show": "MyStutteringLife",
+      "dev_show": "StutterTalk",
+      "train_shows": [
+        "HVSA",
+        "HeStutters",
+        "WomenWhoStutter"
+      ],
+      "num_train_clips": 12178,
+      "num_dev_clips": 5024,
+      "num_test_clips": 1565,
+      "num_train_shows": 3,
+      "num_dev_shows": 1,
+      "num_test_shows": 1,
+      "num_train_speakers": 128,
+      "num_dev_speakers": 81,
+      "num_test_speakers": 28,
+      "disjoint_verification_passed": true,
+      "notes": ""
+    },
+    {
+      "fold": 3,
+      "test_show": "StutterTalk",
+      "dev_show": "WomenWhoStutter",
+      "train_shows": [
+        "HVSA",
+        "HeStutters",
+        "MyStutteringLife"
+      ],
+      "num_train_clips": 4590,
+      "num_dev_clips": 9153,
+      "num_test_clips": 5024,
+      "num_train_shows": 3,
+      "num_dev_shows": 1,
+      "num_test_shows": 1,
+      "num_train_speakers": 46,
+      "num_dev_speakers": 110,
+      "num_test_speakers": 81,
+      "disjoint_verification_passed": true,
+      "notes": ""
+    },
+    {
+      "fold": 4,
+      "test_show": "WomenWhoStutter",
+      "dev_show": "HVSA",
+      "train_shows": [
+        "HeStutters",
+        "MyStutteringLife",
+        "StutterTalk"
+      ],
+      "num_train_clips": 9090,
+      "num_dev_clips": 524,
+      "num_test_clips": 9153,
+      "num_train_shows": 3,
+      "num_dev_shows": 1,
+      "num_test_shows": 1,
+      "num_train_speakers": 124,
+      "num_dev_speakers": 3,
+      "num_test_speakers": 110,
+      "disjoint_verification_passed": true,
+      "notes": ""
+    }
+  ]
+}
